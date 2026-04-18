@@ -46,6 +46,22 @@ syms --fzf                        # interactive search with fzf
 syms --sk                         # interactive search with skim
 ```
 
+## Project auto-detection
+
+When `--lang` is not passed, `syms` walks up from the search path and picks a
+default language based on the first project sentinel it finds:
+
+| Sentinel                              | Default `--lang` |
+|---------------------------------------|------------------|
+| `artisan` or `composer.json`          | `php`            |
+| `Cargo.toml`                          | `rs`             |
+| `go.mod`                              | `go`             |
+| `pyproject.toml` or `requirements.txt`| `py`             |
+| `package.json`                        | `ts,tsx`         |
+
+Explicit `--lang` always wins — pass `--lang ts,tsx` inside a Laravel project
+to override the PHP default, for example.
+
 ## Filters
 
 | Flag | Values |

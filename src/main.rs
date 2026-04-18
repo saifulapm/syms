@@ -92,8 +92,14 @@ fn main() {
     }
 }
 
-fn run(args: Args) -> anyhow::Result<()> {
+fn run(mut args: Args) -> anyhow::Result<()> {
     validate_filters(&args)?;
+
+    // If the user did not pass --lang, try to infer it from project sentinels
+    // (e.g. `artisan` → php, `Cargo.toml` → rs). Explicit --lang always wins.
+    if args.lang.is_empty() {
+        args.lang = detect_project_langs(&args.path);
+    }
 
     let use_picker = if args.fzf {
         Some(picker::Picker::Fzf)
@@ -191,6 +197,35 @@ fn validate_filters(args: &Args) -> anyhow::Result<()> {
         );
     }
     Ok(())
+}
+
+/// Walk up from `start` looking for a project sentinel file. First match wins.
+/// Returns the short-name list to use for `--lang`, or empty if nothing matched.
+fn detect_project_langs(start: &std::path::Path) -> Vec<String> {
+    // Ordered by specificity: Laravel wins over generic npm; composer wins over
+    // a bare `package.json` (so a Laravel app with a Vite frontend auto-detects PHP).
+    const SENTINELS: &[(&str, &[&str])] = &[
+        ("artisan",          &["php"]),        // Laravel
+        ("composer.json",    &["php"]),        // generic PHP
+        ("Cargo.toml",       &["rs"]),
+        ("go.mod",           &["go"]),
+        ("pyproject.toml",   &["py"]),
+        ("requirements.txt", &["py"]),
+        ("package.json",     &["ts", "tsx"]),
+    ];
+
+    let abs = start.canonicalize().unwrap_or_else(|_| start.to_path_buf());
+    let mut dir = if abs.is_file() { abs.parent().map(std::path::Path::to_path_buf) } else { Some(abs) };
+
+    while let Some(d) = dir {
+        for (sentinel, langs) in SENTINELS {
+            if d.join(sentinel).exists() {
+                return langs.iter().map(|s| (*s).to_string()).collect();
+            }
+        }
+        dir = d.parent().map(std::path::Path::to_path_buf);
+    }
+    Vec::new()
 }
 
 fn matches_filters(
