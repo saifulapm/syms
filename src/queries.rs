@@ -1,4 +1,5 @@
-use std::sync::OnceLock;
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
 
 use tree_sitter::Query;
 
@@ -47,6 +48,71 @@ pub fn compiled_queries(lang: Language) -> &'static [CompiledQuery] {
         // Custom languages: queries are pre-compiled during loading
         Language::Custom(idx) => custom::get(idx).map_or(&[], |l| &l.queries),
     }
+}
+
+/// Raw injection query text for a language.
+/// Built-ins currently return `None`; custom languages get theirs from TOML.
+pub fn injection_query_text(lang: Language) -> Option<&'static str> {
+    match lang {
+        Language::Custom(idx) => custom::get(idx)
+            .and_then(|l| l.injection_query_text.as_deref()),
+        _ => None,
+    }
+}
+
+/// A compiled tree-sitter injection query.
+pub struct CompiledInjectionQuery {
+    pub query: Query,
+    pub content_idx: u32,
+    /// Capture index for `@injection.language` (dynamic per-match language selection).
+    pub language_capture_idx: Option<u32>,
+    /// Static per-pattern language from `#set! injection.language "..."`.
+    pub pattern_languages: Vec<Option<String>>,
+}
+
+/// Returns the compiled injection query for a language, or None if the language
+/// has no injection query. Compiled once per language and leaked to 'static.
+pub fn compiled_injection_query(lang: Language) -> Option<&'static CompiledInjectionQuery> {
+    static CACHE: OnceLock<Mutex<HashMap<Language, Option<&'static CompiledInjectionQuery>>>> =
+        OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut guard = cache.lock().unwrap();
+    if let Some(entry) = guard.get(&lang) {
+        return *entry;
+    }
+    let compiled = compile_injection_query(lang).map(|c| &*Box::leak(Box::new(c)));
+    guard.insert(lang, compiled);
+    compiled
+}
+
+fn compile_injection_query(lang: Language) -> Option<CompiledInjectionQuery> {
+    let src = injection_query_text(lang)?;
+    let ts_lang = lang.ts_language();
+    let query = match Query::new(&ts_lang, src) {
+        Ok(q) => q,
+        Err(e) => {
+            eprintln!("syms: injection query compile error for {lang:?}: {e}");
+            return None;
+        }
+    };
+    let content_idx = query.capture_index_for_name("injection.content")?;
+    let language_capture_idx = query.capture_index_for_name("injection.language");
+    let mut pattern_languages = Vec::with_capacity(query.pattern_count());
+    for pat_idx in 0..query.pattern_count() {
+        let mut lang_str = None;
+        for setting in query.property_settings(pat_idx) {
+            if &*setting.key == "injection.language" {
+                lang_str = setting.value.as_deref().map(str::to_string);
+            }
+        }
+        pattern_languages.push(lang_str);
+    }
+    Some(CompiledInjectionQuery {
+        query,
+        content_idx,
+        language_capture_idx,
+        pattern_languages,
+    })
 }
 
 fn compile(lang: Language, raw: &[RawQueryDef]) -> Vec<CompiledQuery> {

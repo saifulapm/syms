@@ -18,6 +18,7 @@ pub struct CustomLang {
     pub extensions: Vec<String>,
     pub ts_language: tree_sitter::Language,
     pub queries: Vec<CompiledQuery>,
+    pub injection_query_text: Option<String>,
     // Keep the library alive so the language pointer stays valid
     _library: libloading::Library,
 }
@@ -37,6 +38,10 @@ struct LangConfig {
     symbol: Option<String>,
     /// Optional: short name for --lang filter (default: first extension)
     short: Option<String>,
+    /// Optional: inline tree-sitter injection query text.
+    injections: Option<String>,
+    /// Optional: path to a .scm file containing the injection query.
+    injections_path: Option<String>,
     #[serde(default)]
     queries: Vec<QueryConfig>,
 }
@@ -98,6 +103,14 @@ pub fn get(index: u16) -> Option<&'static CustomLang> {
 /// Get the short name for a custom language.
 pub fn short_name(index: u16) -> &'static str {
     get(index).map_or("?", |l| &l.short)
+}
+
+/// Find a custom language by its injection marker name (matches `name` or `short`).
+pub fn from_injection_name(name: &str) -> Option<u16> {
+    registry()
+        .iter()
+        .position(|lang| lang.name == name || lang.short == name)
+        .map(|i| u16::try_from(i).expect("too many custom languages"))
 }
 
 fn config_dir() -> Option<PathBuf> {
@@ -177,12 +190,25 @@ fn load_custom_lang(config_path: &Path) -> Result<CustomLang> {
             .unwrap_or_else(|| name.clone())
     });
 
+    let injection_query_text = match (config.injections, config.injections_path) {
+        (Some(text), _) => Some(text),
+        (None, Some(path)) => {
+            let expanded = shellexpand(&path);
+            Some(
+                std::fs::read_to_string(&expanded)
+                    .with_context(|| format!("reading injections file: {expanded}"))?,
+            )
+        }
+        (None, None) => None,
+    };
+
     Ok(CustomLang {
         name,
         short,
         extensions: config.extensions,
         ts_language,
         queries,
+        injection_query_text,
         _library: library,
     })
 }

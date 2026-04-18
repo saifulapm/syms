@@ -53,6 +53,28 @@ impl Language {
         Self::from_extension(ext)
     }
 
+    /// Resolve the target language of an injection marker (e.g. `#set! injection.language "kak"`).
+    pub fn from_injection_name(name: &str) -> Option<Self> {
+        let builtin = match name {
+            "rust" => Some(Self::Rust),
+            "typescript" => Some(Self::TypeScript),
+            "tsx" => Some(Self::Tsx),
+            "javascript" => Some(Self::JavaScript),
+            "go" => Some(Self::Go),
+            "python" => Some(Self::Python),
+            "c" => Some(Self::C),
+            "cpp" | "c++" => Some(Self::Cpp),
+            "java" => Some(Self::Java),
+            "ruby" => Some(Self::Ruby),
+            "php" => Some(Self::Php),
+            "bash" | "sh" => Some(Self::Bash),
+            "css" => Some(Self::Css),
+            "lua" => Some(Self::Lua),
+            _ => None,
+        };
+        builtin.or_else(|| custom::from_injection_name(name).map(Self::Custom))
+    }
+
     pub fn short_name(self) -> &'static str {
         match self {
             Self::Rust => "rs",

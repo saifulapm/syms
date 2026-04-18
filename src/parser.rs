@@ -2,29 +2,20 @@ use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::Result;
-use tree_sitter::{Parser, QueryCursor, StreamingIterator};
+use tree_sitter::{Parser, QueryCursor, Range, StreamingIterator};
 
 use crate::language::Language;
 use crate::queries::{self, CompiledQuery};
 use crate::symbol::{Symbol, SymbolKind, Visibility};
 
-/// Parse a file and extract all symbols.
+const MAX_INJECTION_DEPTH: u32 = 8;
+
+/// Parse a file and extract all symbols, descending into tree-sitter injections
+/// (e.g. kak-inside-kak via `provide-module`, `define-command`, etc.) up to
+/// `MAX_INJECTION_DEPTH` levels.
 pub fn extract_symbols(path: &Arc<Path>, source: &[u8], lang: Language) -> Result<Vec<Symbol>> {
-    let ts_lang = lang.ts_language();
-
-    let mut parser = Parser::new();
-    parser.set_language(&ts_lang)?;
-
-    let tree = parser
-        .parse(source, None)
-        .ok_or_else(|| anyhow::anyhow!("failed to parse {}", path.display()))?;
-
-    let compiled = queries::compiled_queries(lang);
     let mut symbols = Vec::new();
-
-    for cq in compiled {
-        extract_with_query(path, source, lang, &tree, cq, &mut symbols);
-    }
+    extract_recursive(path, source, lang, &[], 0, &mut symbols)?;
 
     // Deduplicate by (line, col) — keep first occurrence
     symbols.sort_by_key(|s| (s.line, s.col));
@@ -36,6 +27,82 @@ pub fn extract_symbols(path: &Arc<Path>, source: &[u8], lang: Language) -> Resul
     }
 
     Ok(symbols)
+}
+
+/// Parse `source` as `lang`, optionally restricted to `ranges` (empty = whole file),
+/// run this language's symbol queries, then walk the injection query and recurse
+/// into each injected region.
+fn extract_recursive(
+    path: &Arc<Path>,
+    source: &[u8],
+    lang: Language,
+    ranges: &[Range],
+    depth: u32,
+    symbols: &mut Vec<Symbol>,
+) -> Result<()> {
+    let ts_lang = lang.ts_language();
+    let mut parser = Parser::new();
+    parser.set_language(&ts_lang)?;
+    if !ranges.is_empty() {
+        parser
+            .set_included_ranges(ranges)
+            .map_err(|e| anyhow::anyhow!("invalid included ranges at index {}", e.0))?;
+    }
+
+    let Some(tree) = parser.parse(source, None) else {
+        return Ok(());
+    };
+
+    for cq in queries::compiled_queries(lang) {
+        extract_with_query(path, source, lang, &tree, cq, symbols);
+    }
+
+    if depth >= MAX_INJECTION_DEPTH {
+        return Ok(());
+    }
+    let Some(iq) = queries::compiled_injection_query(lang) else {
+        return Ok(());
+    };
+
+    let mut cursor = QueryCursor::new();
+    let mut matches = cursor.matches(&iq.query, tree.root_node(), source);
+    while let Some(m) = matches.next() {
+        let mut content_node = None;
+        let mut dynamic_lang: Option<String> = None;
+        for c in m.captures {
+            if Some(c.index) == iq.language_capture_idx {
+                dynamic_lang = c.node.utf8_text(source).ok().map(str::to_string);
+            } else if c.index == iq.content_idx {
+                content_node = Some(c.node);
+            }
+        }
+        let Some(content) = content_node else { continue };
+        let lang_name = dynamic_lang
+            .or_else(|| iq.pattern_languages[m.pattern_index].clone());
+        let Some(name) = lang_name else { continue };
+        let Some(injected_lang) = Language::from_injection_name(&name) else { continue };
+
+        let inner_range = Range {
+            start_byte: content.start_byte(),
+            end_byte: content.end_byte(),
+            start_point: content.start_position(),
+            end_point: content.end_position(),
+        };
+        if inner_range.start_byte >= inner_range.end_byte {
+            continue;
+        }
+        // Self-injection guard: don't recurse if the injection spans the same range we're parsing
+        if ranges.len() == 1
+            && inner_range.start_byte == ranges[0].start_byte
+            && inner_range.end_byte == ranges[0].end_byte
+        {
+            continue;
+        }
+
+        extract_recursive(path, source, injected_lang, &[inner_range], depth + 1, symbols)?;
+    }
+
+    Ok(())
 }
 
 fn extract_with_query(

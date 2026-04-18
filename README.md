@@ -75,6 +75,25 @@ query = '(binding (attrpath (identifier) @name)) @def'
 
 Compatible with grammars from helix, neovim, or `tree-sitter build`.
 
+### Injections
+
+Custom languages can declare a tree-sitter injection query to surface symbols
+inside nested language regions (e.g. kakscript blocks inside `provide-module`,
+`define-command`, or `hook` bodies). Point at an injections file, or inline the
+query:
+
+```toml
+# ~/.config/syms/languages/kak.toml
+extensions = ["kak"]
+parser = "/path/to/kak.so"
+injections_path = "/path/to/tree-sitter-kak/queries/injections.scm"
+```
+
+Injection targets resolve by language name — the string in `#set!
+injection.language "<name>"` (or a `@injection.language` capture) is matched
+against built-in languages (`"rust"`, `"bash"`, `"python"`, …) and the `name` /
+`short` of any loaded custom language. Recursion is capped at 8 levels.
+
 ## License
 
 MIT
