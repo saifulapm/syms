@@ -16,6 +16,11 @@ pub fn walk(root: &Path, tx: Sender<Symbol>) {
         .git_ignore(true)
         .git_global(true)
         .git_exclude(true)
+        // Apply .gitignore / global gitignore even when there's no .git directory
+        // (e.g. a Laravel project checked out as a tarball, or a subdirectory of
+        // a larger workspace). Without this, `.gitignore` is only honored inside
+        // a git repo.
+        .require_git(false)
         .build_parallel();
 
     walker.run(|| {
